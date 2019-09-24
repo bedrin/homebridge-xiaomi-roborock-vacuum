@@ -1,23 +1,14 @@
 {
   "name": "@hoobs/roborock",
   "version": "0.6.2",
-  "description": "Xiaomi Vacuum Cleaner - 1st (Mi Robot), 2nd (Roborock S50 + S55) and 3rd Generation (Roborock S6) - plugin for Homebridge.",
+  "description": "Xiaomi/Roborock plugin for HOOBS.",
   "license": "MIT",
   "keywords": [
-    "homebridge-plugin",
-    "xiaomi",
-    "mi robot",
-    "vacuum cleaner",
-    "roborock s50",
-    "roborock s55",
-    "xiaomi vacuum gen1",
-    "xiaomi vacuum gen2",
-    "xiaomi vacuum gen3",
-    "roborock s6",
-    "roborock t6",
-    "xiaowa lite c10",
-    "xiaowa c10",
-    "mi robot 1s"
+    "hoobs-certified",
+    "category-climate",
+    "hoobs-plugin",
+    "roborock",
+    "xiaomi"
   ],
   "repository": {
     "type": "git",
