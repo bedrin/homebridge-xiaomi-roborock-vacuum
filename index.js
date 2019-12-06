@@ -1,6 +1,6 @@
 'use strict';
 
-const miio = require('miio');
+const miio = require('@hoobs/miio');
 const util = require('util');
 const callbackify = require('./lib/callbackify');
 
@@ -26,6 +26,8 @@ class XiaomiRoborockVacuum {
       'roborock.vacuum.c1': XiaomiRoborockVacuum.speedmodes_gen1,
       'roborock.vacuum.s5': XiaomiRoborockVacuum.speedmodes_gen2,
       'roborock.vacuum.s6': XiaomiRoborockVacuum.speedmodes_gen3,
+      'roborock.vacuum.t6': XiaomiRoborockVacuum.speedmodes_gen3,
+      'roborock.vacuum.e2': XiaomiRoborockVacuum.speedmodes_gen3,
     }
   }
 

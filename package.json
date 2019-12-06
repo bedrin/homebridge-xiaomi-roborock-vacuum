@@ -1,6 +1,6 @@
 {
   "name": "@hoobs/roborock",
-  "version": "0.6.2",
+  "version": "0.6.4",
   "description": "Xiaomi/Roborock plugin for HOOBS.",
   "license": "MIT",
   "keywords": [
@@ -23,6 +23,6 @@
     "homebridge": ">=0.4.45"
   },
   "dependencies": {
-    "miio": "git://github.com/nicoh88/miio.git#master"
+    "@hoobs/miio": "^1.15.10"
   }
 }
