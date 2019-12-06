@@ -126,18 +126,17 @@ class XiaomiRoborockVacuum {
     this.connectRetry = setTimeout(() => void 0, 100); // Noop timeout only to initialise the property
 
     if (!this.config.ip) {
-      throw new Error('You must provide an ip address of the vacuum cleaner.');
+      this.log.info('You must provide an ip address of the vacuum cleaner.');
     }
 
     if (!this.config.token) {
-      throw new Error('You must provide a token of the vacuum cleaner.');
+      this.log.info('You must provide a token of the vacuum cleaner.');
     }
 
-    // HOMEKIT SERVICES
-    this.initialiseServices();
-
-    // Initialize device
-    this.connect();
+    if (this.config.ip && this.config.token) {
+        this.initialiseServices(); // HOMEKIT SERVICES
+        this.connect(); // Initialize device
+    }
   }
 
   initialiseServices() {
