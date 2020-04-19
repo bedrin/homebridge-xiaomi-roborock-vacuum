@@ -1,6 +1,6 @@
 {
   "name": "@hoobs/roborock",
-  "version": "0.6.5",
+  "version": "0.7.5",
   "description": "Xiaomi/Roborock plugin for HOOBS.",
   "license": "MIT",
   "keywords": [
@@ -8,7 +8,22 @@
     "category-climate",
     "hoobs-plugin",
     "roborock",
-    "xiaomi"
+    "xiaomi",
+    "mi robot",
+    "vacuum cleaner",
+    "roborock s50",
+    "roborock s55",
+    "roborock s5",
+    "roborock s5 max",
+    "xiaomi vacuum gen1",
+    "xiaomi vacuum gen2",
+    "xiaomi vacuum gen3",
+    "roborock s6",
+    "roborock t6",
+    "roborock t4",
+    "xiaowa lite c10",
+    "xiaowa c10",
+    "mi robot 1s"
   ],
   "repository": {
     "type": "git",
@@ -23,6 +38,8 @@
     "homebridge": ">=0.4.45"
   },
   "dependencies": {
-    "@hoobs/miio": "^1.15.10"
+    "miio-nicoh88": ">=0.1.0",
+    "semver": "^7.1.2",
+    "system-sleep": "^1.3.6"
   }
 }

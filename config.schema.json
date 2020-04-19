@@ -1,0 +1,187 @@
+{
+  "pluginAlias": "XiaomiRoborockVacuum",
+  "pluginType": "accessory",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Xiaomi Mi Robot Vaccum 1st Generation",
+        "minLength": 1,
+        "required": true
+      },
+      "ip": {
+        "title": "IP",
+        "type": "string",
+        "required": true
+      },
+      "token": {
+        "title": "Token",
+        "type": "string",
+        "required": true
+      },
+      "waterBox": {
+        "title": "Enable the Water Box mode (beta)",
+        "type": "boolean",
+        "default": false,
+        "required": false
+      },
+      "pause": {
+        "title": "Show switch for \"pause\"",
+        "type": "boolean",
+        "default": false,
+        "required": true
+      },
+      "dock": {
+        "title": "Show Dock sensor",
+        "type": "boolean",
+        "default": true,
+        "required": true
+      },
+      "delay": {
+        "title": "Startdelay (beta) just for testing",
+        "type": "boolean",
+        "default": false,
+        "required": false
+      },
+      "cleanword": {
+        "title": "Cleaning Word",
+        "type": "string",
+        "default": "clean",
+        "required": true
+      },
+      "autoroom": {
+        "title": "Automatic Room Detection",
+        "type": "boolean",
+        "default": false,
+        "required": true
+      },
+      "rooms": {
+        "title": "Room cleaning",
+        "type": "array",
+        "required": false,
+        "items": {
+          "title": "Rooms",
+          "type": "object",
+          "properties": {
+            "name": {
+              "name": "Room Name",
+              "type": "string"
+            },
+            "id": {
+              "name": "Room ID",
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "zones": {
+        "title": "Zone cleaning",
+        "type": "array",
+        "required": false,
+        "items": {
+          "title": "Zones",
+          "type": "object",
+          "properties": {
+            "name": {
+              "name": "Name",
+              "type": "string"
+            },
+            "zone": {
+              "name": "Zone",
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    "name",
+    {
+      "type": "flex",
+      "flex-flow": "row wrap",
+      "items": [
+        "ip",
+        "token"
+      ]
+    },
+    "waterBox",
+    "pause",
+    "dock",
+    "delay",
+    "cleanword",
+    "autoroom",
+    {
+      "type": "fieldset",
+      "title": "Rooms",
+      "description": "Room Mapping", 
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "notitle": true,
+          "key": "rooms",
+          "type": "array",
+          "items": [
+            {
+              "type": "div",
+              "displayFlex": true,
+              "flex-direction": "row",
+              "items": [
+                {
+                  "key": "rooms[].id",
+                  "flex": "1 1 50px",
+                  "notitle": true,
+                  "placeholder": "Room ID"
+                },
+                {
+                  "key": "rooms[].name",
+                  "flex": "4 4 200px",
+                  "notitle": true,
+                  "placeholder": "Room Name"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Zones",
+      "description": "Zone cleaning", 
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "notitle": true,
+          "key": "zones",
+          "type": "array",
+          "items": [
+            {
+              "type": "div",
+              "displayFlex": true,
+              "flex-direction": "row",
+              "items": [
+                {
+                  "key": "zones[].name",
+                  "flex": "1 1 100px",
+                  "notitle": true,
+                  "placeholder": "Zone Name"
+                },
+                {
+                  "key": "zones[].zone",
+                  "flex": "4 4 150px",
+                  "notitle": true,
+                  "placeholder": "Zone Parameter"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
