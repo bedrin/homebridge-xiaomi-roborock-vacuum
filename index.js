@@ -1,13 +1,19 @@
 'use strict';
 
-const miio = require('@hoobs/miio');
+const semver = require('semver');
+const miio = require('miio-nicoh88');
 const util = require('util');
 const callbackify = require('./lib/callbackify');
+const safeCall = require('./lib/safeCall');
+const sleep = require('system-sleep');
 
 let homebrideAPI, Service, Characteristic;
 
 const PLUGIN_NAME = 'homebridge-xiaomi-roborock-vacuum';
 const ACCESSORY_NAME = 'XiaomiRoborockVacuum';
+
+const MODELS = require('./models');
+const GET_STATE_INTERVAL_MS = 30000; // 30s
 
 module.exports = function (homebridge) {
   // Accessory = homebridge.platformAccessory;
@@ -20,70 +26,13 @@ module.exports = function (homebridge) {
 }
 
 class XiaomiRoborockVacuum {
-  static get models() {
-    return {
-      'rockrobo.vacuum.v1': XiaomiRoborockVacuum.speedmodes_gen1,
-      'roborock.vacuum.c1': XiaomiRoborockVacuum.speedmodes_gen1,
-      'roborock.vacuum.s5': XiaomiRoborockVacuum.speedmodes_gen2,
-      'roborock.vacuum.s6': XiaomiRoborockVacuum.speedmodes_gen3,
-      'roborock.vacuum.t6': XiaomiRoborockVacuum.speedmodes_gen3,
-      'roborock.vacuum.e2': XiaomiRoborockVacuum.speedmodes_gen3,
-    }
-  }
-
-  static get speedmodes_gen1() {
-    return [
-      // 0%       = Off / Aus
-      { homekitTopLevel: 0, miLevel: 0, name: "Off" },
-      // 1-38%   = "Quiet / Leise"
-      { homekitTopLevel: 38, miLevel: 38, name: "Quiet" },
-      // 39-60%  = "Balanced / Standard"
-      { homekitTopLevel: 60, miLevel: 60, name: "Balanced" },
-      // 61-77%  = "Turbo / Stark"
-      { homekitTopLevel: 77, miLevel: 77, name: "Turbo" },
-      // 78-100% = "Full Speed / Max Speed / Max"
-      { homekitTopLevel: 100, miLevel: 90, name: "Max" }
-    ];
-  }
-
-  static get speedmodes_gen2() {
-    return [
-      // 0%      = Off / Aus
-      { homekitTopLevel: 0, miLevel: 0, name: "Off" },
-      // 1-15%   = "Mop / Mopping / Nur wischen"
-      { homekitTopLevel: 15, miLevel: 105, name: "Mop" },
-      // 16-38%  = "Quiet / Leise"
-      { homekitTopLevel: 38, miLevel: 38, name: "Quiet" },
-      // 39-60%  = "Balanced / Standard"
-      { homekitTopLevel: 60, miLevel: 60, name: "Balanced" },
-      // 61-75%  = "Turbo / Stark"
-      { homekitTopLevel: 75, miLevel: 75, name: "Turbo" },
-      // 76-100% = "Full Speed / Max Speed / Max"
-      { homekitTopLevel: 100, miLevel: 100, name: "Max" }
-    ];
-  }
-
-  static get speedmodes_gen3() {
-    return [
-      // 0%      = Off / Aus
-      { homekitTopLevel: 0, miLevel: 0, name: "Off" },
-      // 1-38%   = "Quiet / Leise"
-      { homekitTopLevel: 38, miLevel: 101, name: "Quiet" },
-      // 39-60%  = "Balanced / Standard"
-      { homekitTopLevel: 60, miLevel: 102, name: "Balanced" },
-      // 61-77%  = "Turbo / Stark"
-      { homekitTopLevel: 77, miLevel: 103, name: "Turbo" },
-      // 78-100% = "Full Speed / Max Speed / Max"
-      { homekitTopLevel: 100, miLevel: 104, name: "Max" }
-    ];
-  }
-
   // From https://github.com/aholstenson/miio/blob/master/lib/devices/vacuum.js#L128
   static get cleaningStatuses() {
     return [
       'cleaning',
       'spot-cleaning',
-      'zone-cleaning'
+      'zone-cleaning',
+      'room-cleaning'
     ];
   }
 
@@ -119,11 +68,17 @@ class XiaomiRoborockVacuum {
     this.log = log;
     this.config = config;
     this.config.name = config.name || 'Roborock vacuum cleaner';
+    this.config.cleanword = config.cleanword || 'cleaning';
+    this.config.delay = config.delay || false;
     this.services = {};
+
+    // Used to store the latest state to reduce logging
+    this.cachedState = new Map();
 
     this.device = null;
     this.connectingPromise = null;
     this.connectRetry = setTimeout(() => void 0, 100); // Noop timeout only to initialise the property
+    this.getStateInterval = setInterval(() => void 0, GET_STATE_INTERVAL_MS); // Noop timeout only to initialise the property
 
     if (!this.config.ip) {
       this.log.info('You must provide an ip address of the vacuum cleaner.');
@@ -133,10 +88,13 @@ class XiaomiRoborockVacuum {
       this.log.info('You must provide a token of the vacuum cleaner.');
     }
 
-    if (this.config.ip && this.config.token) {
-        this.initialiseServices(); // HOMEKIT SERVICES
-        this.connect(); // Initialize device
-    }
+    // HOMEKIT SERVICES
+    this.initialiseServices();
+
+    // Initialize device
+    this.connect().catch(() => {
+      // Do nothing in the catch because this function already logs the error internally and retries after 2 minutes.
+    });
   }
 
   initialiseServices() {
@@ -154,7 +112,7 @@ class XiaomiRoborockVacuum {
       .getCharacteristic(Characteristic.SerialNumber)
       .on('get', (cb) => callbackify(() => this.getSerialNumber(), cb));
 
-    this.services.fan = new Service.Fan(this.config.name);
+    this.services.fan = new Service.Fan(this.config.name, 'Speed');
     this.services.fan
       .getCharacteristic(Characteristic.On)
       .on('get', (cb) => callbackify(() => this.getCleaning(), cb))
@@ -165,7 +123,16 @@ class XiaomiRoborockVacuum {
     this.services.fan
       .getCharacteristic(Characteristic.RotationSpeed)
       .on('get', (cb) => callbackify(() => this.getSpeed(), cb))
-      .on('set', (newState, cb) => callbackify(() => this.setSpeed(newState), cb))
+      .on('set', (newState, cb) => callbackify(() => this.setSpeed(newState), cb));
+
+    if (this.config.waterBox) {
+      this.services.waterBox = new Service.Fan(`${this.config.name} Water Box`, 'Water Box');
+      // TODO: Do we need to manage the Characteristic.On?
+      this.services.waterBox
+        .getCharacteristic(Characteristic.RotationSpeed)
+        .on('get', (cb) => callbackify(() => this.getWaterSpeed(), cb))
+        .on('set', (newState, cb) => callbackify(() => this.setWaterSpeed(newState), cb));
+    }
 
     this.services.battery = new Service.BatteryService(`${this.config.name} Battery`);
     this.services.battery
@@ -179,7 +146,7 @@ class XiaomiRoborockVacuum {
       .on('get', (cb) => callbackify(() => this.getBatteryLow(), cb));
 
     if (this.config.pause) {
-      this.services.pause = new Service.Switch(`${this.config.name} Pause`);
+      this.services.pause = new Service.Switch(`${this.config.name} Pause`, 'Pause Switch');
       this.services.pause
         .getCharacteristic(Characteristic.On)
         .on('get', (cb) => callbackify(() => this.getPauseState(), cb))
@@ -192,6 +159,18 @@ class XiaomiRoborockVacuum {
       this.services.dock
         .getCharacteristic(Characteristic.OccupancyDetected)
         .on('get', (cb) => callbackify(() => this.getDocked(), cb));
+    }
+
+    if (this.config.rooms && !this.config.autoroom) {
+      for(var i in this.config.rooms) {
+        this.createRoom(this.config.rooms[i].id, this.config.rooms[i].name);
+      }
+    }
+
+    if (this.config.zones) {
+      for(var i in this.config.zones) {
+        this.createZone(this.config.zones[i].name, this.config.zones[i].zone);
+      }
     }
 
     // ADDITIONAL HOMEKIT SERVICES
@@ -272,6 +251,19 @@ class XiaomiRoborockVacuum {
       .on('get', (cb) => callbackify(() => this.getCareMainBrush(), cb));
   }
 
+  /**
+   * Returns if the newValue is different to the previously cached one
+   * 
+   * @param {string} property
+   * @param {any} newValue
+   * @returns {boolean} Whether the newValue is not the same as the previously cached one.
+   */
+  isNewValue(property, newValue) {
+    const cachedValue = this.cachedState.get(property);
+    this.cachedState.set(property, newValue);
+    return cachedValue !== newValue;
+  }
+
   changedError(robotError) {
     this.log.debug(`DEB changedError | ${this.model} | ErrorID: ${robotError.id}, ErrorDescription: ${robotError.description}`);
     let robotErrorTxt = XiaomiRoborockVacuum.errors[`id${robotError.id}`] ?
@@ -284,33 +276,47 @@ class XiaomiRoborockVacuum {
   }
 
   changedCleaning(isCleaning) {
-    this.log.debug(`MON changedCleaning | ${this.model} | CleaningState is now ${isCleaning}`);
-
-    this.log.info(`INF changedCleaning | ${this.model} | Cleaning is ${isCleaning ? 'ON' : 'OFF'}.`);
+    if (this.isNewValue('cleaning', isCleaning)) {
+      this.log.debug(`MON changedCleaning | ${this.model} | CleaningState is now ${isCleaning}`);
+      this.log.info(`INF changedCleaning | ${this.model} | Cleaning is ${isCleaning ? 'ON' : 'OFF'}.`);
+    }
+    // We still update the value in Homebridge. If we are calling the changed method is because we want to change it.
     this.services.fan.getCharacteristic(Characteristic.On).updateValue(isCleaning);
   }
 
   changedPause(isCleaning) {
     if (this.config.pause) {
-      this.log.debug(`MON changedPause | ${this.model} | CleaningState is now ${isCleaning}`);
-      this.log.info(`INF changedPause | ${this.model} | ${isCleaning ? 'Paused possible' : 'Paused not possible, no cleaning'}`);
+      if (this.isNewValue('pause', isCleaning)) {
+        this.log.debug(`MON changedPause | ${this.model} | CleaningState is now ${isCleaning}`);
+        this.log.info(`INF changedPause | ${this.model} | ${isCleaning ? 'Paused possible' : 'Paused not possible, no cleaning'}`);
+      }
+      // We still update the value in Homebridge. If we are calling the changed method is because we want to change it.
       this.services.pause.getCharacteristic(Characteristic.On).updateValue(isCleaning);
     }
   }
 
   changedCharging(isCharging) {
-    this.log.info(`MON changedCharging | ${this.model} | ChargingState is now ${isCharging}`);
-    this.log.info(`INF changedCharging | ${this.model} | Charging is ${isCharging ? 'active' : 'cancelled'}`);
+    const isNewValue = this.isNewValue('charging', isCharging);
+    if (isNewValue) {
+      this.log.info(`MON changedCharging | ${this.model} | ChargingState is now ${isCharging}`);
+      this.log.info(`INF changedCharging | ${this.model} | Charging is ${isCharging ? 'active' : 'cancelled'}`);
+    }
+    // We still update the value in Homebridge. If we are calling the changed method is because we want to change it.
     this.services.battery.getCharacteristic(Characteristic.ChargingState).updateValue(isCharging ? Characteristic.ChargingState.CHARGING : Characteristic.ChargingState.NOT_CHARGING);
     if (this.config.dock) {
-      const msg = isCharging ? 'Robot was docked' : 'Robot not anymore in dock';
-      this.log.info(`INF changedCharging | ${this.model} | ${msg}.`);
+      if (isNewValue) {
+        const msg = isCharging ? 'Robot was docked' : 'Robot not anymore in dock';
+        this.log.info(`INF changedCharging | ${this.model} | ${msg}.`);
+      }
       this.services.dock.getCharacteristic(Characteristic.OccupancyDetected).updateValue(isCharging);
     }
   }
 
   changedSpeed(speed) {
-    this.log.info(`MON changedSpeed | ${this.model} | FanSpeed is now ${speed}%`);
+    const isNewValue = this.isNewValue('speed', speed);
+    if (isNewValue) {
+      this.log.info(`MON changedSpeed | ${this.model} | FanSpeed is now ${speed}%`);
+    }
 
     const speedMode = this.findSpeedModeFromMiio(speed);
 
@@ -318,7 +324,9 @@ class XiaomiRoborockVacuum {
       this.log.warn(`WAR changedSpeed | ${this.model} | Speed was changed to ${speed}%, this speed is not supported`);
     } else {
       const { homekitTopLevel, name } = speedMode;
-      this.log.info(`INF changedSpeed | ${this.model} | Speed was changed to ${speed}% (${name}), for HomeKit ${homekitTopLevel}%`);
+      if (isNewValue) {
+        this.log.info(`INF changedSpeed | ${this.model} | Speed was changed to ${speed}% (${name}), for HomeKit ${homekitTopLevel}%`);
+      }
       this.services.fan.getCharacteristic(Characteristic.RotationSpeed).updateValue(homekitTopLevel);
     }
   }
@@ -349,6 +357,10 @@ class XiaomiRoborockVacuum {
       this.log.info('STA getDevice | FanSpeed: ' + this.device.property("fanSpeed"));
       this.log.info('STA getDevice | BatteryLevel: ' + this.device.property("batteryLevel"));
 
+      if (this.config.autoroom) {
+        await this.getRoomMap();
+      }
+
       try {
         const serial = await this.getSerialNumber();
         this.services.info.setCharacteristic(Characteristic.SerialNumber, `${serial}`);
@@ -359,6 +371,7 @@ class XiaomiRoborockVacuum {
 
       try {
         const firmware = await this.getFirmware();
+        this.firmware = firmware;
         this.services.info.setCharacteristic(Characteristic.FirmwareRevision, `${firmware}`);
         this.log.info(`STA getDevice | Firmwareversion: ${firmware}`);
       } catch (err) {
@@ -382,8 +395,12 @@ class XiaomiRoborockVacuum {
       });
 
       await this.getState();
+      // Refresh the state every 30s so miio maintains a fresh connection (or recovers connection if lost until we fix https://github.com/nicoh88/homebridge-xiaomi-roborock-vacuum/issues/81)
+      clearInterval(this.getStateInterval);
+      this.getStateInterval = setInterval(() => this.getState(), GET_STATE_INTERVAL_MS);
     } else {
-      this.log.error('ERR getDevice | Is not a vacuum cleaner!');
+      const model = (device || {}).miioModel;
+      this.log.error(`ERR getDevice | Device "${model}" is not registered as a vacuum cleaner! If you think it should be, please open an issue at https://github.com/nicoh88/homebridge-xiaomi-roborock-vacuum/issues/new and provide this line.`);
       this.log.debug(device);
       device.destroy();
     }
@@ -395,7 +412,7 @@ class XiaomiRoborockVacuum {
         this.log.error(`ERR connect | miio.device, next try in 2 minutes | ${error}`);
         clearTimeout(this.connectRetry);
         // Using setTimeout instead of holding the promise. This way we'll keep retrying but not holding the other actions
-        this.connectRetry = setTimeout(() => this.connect(), 120000);
+        this.connectRetry = setTimeout(() => this.connect().catch(() => {}), 120000);
         throw error;
       });
     }
@@ -431,24 +448,24 @@ class XiaomiRoborockVacuum {
   }
 
   async getState() {
-    await this.ensureDevice('getState');
-
     try {
+      await this.ensureDevice('getState');
       const state = await this.device.state();
-      if (state.error) {
-        this.changedError(state.error);
-        throw state.error;
+      this.log.debug(`DEB getState | ${this.model} | State %j`, state);
+      
+      safeCall(state.cleaning, (cleaning) => this.changedCleaning(cleaning));
+      safeCall(state.charging, (charging) => this.changedCharging(charging));
+      safeCall(state.fanSpeed, (fanSpeed) => this.changedSpeed(fanSpeed));
+      safeCall(state.batteryLevel, (batteryLevel) => this.changedBattery(batteryLevel));
+      safeCall(state.cleaning, (cleaning) => this.changedPause(cleaning));
+      if (this.config.waterBox) {
+        safeCall(state['water_box_mode'], (waterBoxMode) => this.changedWaterSpeed(waterBoxMode));
       }
 
-      this.log.debug(`DEB getState | ${this.model} | State %j`, state);
-
-      this.changedCleaning(state.cleaning);
-      this.changedCharging(state.charging);
-      this.changedSpeed(state.fanSpeed);
-      this.changedBattery(state.BatteryLevel);
-      this.changedPause(state.cleaning);
+      // No need to throw the error at this point. This are just warnings like (https://github.com/nicoh88/homebridge-xiaomi-roborock-vacuum/issues/91)
+      safeCall(state.error, (error) => this.changedError(error));
     } catch (err) {
-      this.log.error(`ERR getState | this.device.state | ${err}`);
+      this.log.error(`ERR getState | %j`, err);
     }
   }
 
@@ -508,7 +525,7 @@ class XiaomiRoborockVacuum {
         await this.device.activateCleaning();
       } else if (!state) { // Stop cleaning
         this.log.info(`ACT setCleaning | ${this.model} | Stop cleaning and go to charge.`);
-        await this.device.activateCharging(); // Charging works for 1st, not for 2nd
+        await this.activateCharging(); // Charging works for 1st, not for 2nd
       }
     } catch (err) {
       this.log.error(`ERR setCleaning | ${this.model} | Failed to set cleaning to ${state}`, err);
@@ -516,9 +533,121 @@ class XiaomiRoborockVacuum {
     }
   }
 
+  async setCleaningRoom(state, room) {
+    await this.ensureDevice('setCleaning');
+
+    try {
+      if (state && !this.isCleaning) { // Start cleaning
+        this.log.info(`ACT setCleaning | ${this.model} | Start cleaning Room ID ${room}, not charging.`);
+        const refreshState = {
+          refresh: [ 'state' ],
+          refreshDelay: 1000
+        };
+        await this.device.call('app_segment_clean', [room], refreshState);
+      } else if (!state) { // Stop cleaning
+        this.log.info(`ACT setCleaning | ${this.model} | Stop cleaning and go to charge.`);
+        await this.activateCharging();
+      }
+    } catch (err) {
+      this.log.error(`ERR setCleaning | ${this.model} | Failed to set cleaning to ${state}`, err);
+      throw err;
+    }
+  }
+
+  async setCleaningZone(state, zone) {
+    await this.ensureDevice('setCleaning');
+
+    try {
+      if (state && !this.isCleaning) { // Start cleaning
+        this.log.info(`ACT setCleaning | ${this.model} | Start cleaning Zone ${zone}, not charging.`);
+        const refreshState = {
+          refresh: [ 'state' ],
+          refreshDelay: 1000
+        };
+        await this.device.call('app_zoned_clean', [zone], refreshState);
+      } else if (!state) { // Stop cleaning
+        this.log.info(`ACT setCleaning | ${this.model} | Stop cleaning and go to charge.`);
+        await this.activateCharging();
+      }
+    } catch (err) {
+      this.log.error(`ERR setCleaning | ${this.model} | Failed to set cleaning to ${state}`, err);
+      throw err;
+    }
+  }
+
+  async activateCharging() {
+    await this.ensureDevice('activateCharging');
+    try {
+      const refreshState = {
+        refresh: [ 'state' ],
+        refreshDelay: 1000
+      };
+      await this.device.call('app_stop', [], refreshState);
+      // Wait one second before calling go to charge
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const changeResponse = await this.device.call('app_charge', [], refreshState);
+      if (!(changeResponse && changeResponse[0] === 'ok')) {
+        throw new Error('Failed to go to change');
+      }
+    } catch (err) {
+      this.log.error(`ERR setCharging | ${this.model} | Failed to go charging.`, err);
+      throw err;
+    }
+  }
+
+  async getRoomMap() {
+    await this.ensureDevice('getRoomMap');
+
+    try {
+      const map = await this.device.call('get_room_mapping');
+      this.log.info(`INF getRoomMap | ${this.model} | Map is ${map}`);
+      for(let val of map) {
+        this.createRoom(val[0], val[1]);
+      }
+    } catch (err) {
+      this.log.error(`ERR getRoomMap | Failed getting the Room Map.`, err);
+      throw err;
+    }
+  }
+
+  createRoom(roomId, roomName) {
+    this.log.info(`INF createRoom | ${this.model} | Room ${roomName} (${roomId})`);
+    this.services[roomName] = new Service.Switch(`${this.config.cleanword} ${roomName}`,'roomService' + roomId);
+    this.services[roomName]
+    .getCharacteristic(Characteristic.On)
+    .on('get', (cb) => callbackify(() => this.getCleaning(), cb))
+    .on('set', (newState, cb) => callbackify(() => this.setCleaningRoom(newState, roomId), cb))
+    .on('change', (oldState, newState) => {
+      this.changedPause(newState);
+    });
+  }
+
+  createZone(zoneName, zoneParams) {
+    this.log.info(`INF createRoom | ${this.model} | Zone ${zoneName} (${zoneParams})`);
+    this.services[zoneName] = new Service.Switch(`${this.config.cleanword} ${zoneName}`,'zoneCleaning' + zoneName);
+    this.services[zoneName]
+    .getCharacteristic(Characteristic.On)
+    .on('get', (cb) => callbackify(() => this.getCleaning(), cb))
+    .on('set', (newState, cb) => callbackify(() => this.setCleaningZone(newState, zoneParams), cb))
+    .on('change', (oldState, newState) => {
+      this.changedPause(newState);
+    });
+  }
+
+  findSpeedModes() {
+    return (MODELS[this.model] || []).reduce((acc, option) => {
+      if (option.firmware) {
+        const [,cleanFirmware] = (this.firmware || '').match(/^(\d+\.\d+\.\d+)/) || [];
+        return semver.satisfies(cleanFirmware, option.firmware) ? option : acc;
+      } else {
+        return option;
+      }
+    }, MODELS.default);
+  }
+
   findSpeedModeFromMiio(speed) {
     // Get the speed modes for this model
-    const speedModes = XiaomiRoborockVacuum.models[this.model] || XiaomiRoborockVacuum.speedmodes_gen1;
+    const speedModes = this.findSpeedModes().speed;
 
     // Find speed mode that matches the miLevel
     return speedModes.find((mode) => mode.miLevel === speed);
@@ -542,7 +671,7 @@ class XiaomiRoborockVacuum {
     this.log.debug(`ACT setSpeed | ${this.model} | Speed got ${speed}% over HomeKit > CLEANUP.`);
 
     // Get the speed modes for this model
-    const speedModes = XiaomiRoborockVacuum.models[this.model] || XiaomiRoborockVacuum.speedmodes_gen1;
+    const speedModes = this.findSpeedModes().speed;
 
     // gen1 has maximum of 91%, so anything over that won't work. Getting safety maximum.
     const safeSpeed = Math.min(parseInt(speed), speedModes[speedModes.length - 1].homekitTopLevel);
@@ -552,7 +681,97 @@ class XiaomiRoborockVacuum {
 
     this.log.info(`ACT setSpeed | ${this.model} | FanSpeed set to ${miLevel} over miIO for "${name}".`);
 
-    await this.device.changeFanSpeed(miLevel);
+    if (miLevel === 0) {
+      this.log.debug(`DEB setSpeed | ${this.model} | FanSpeed is 0 => Calling setCleaning(false) instead of changing the fan speed`);
+      await this.setCleaning(false);
+    } else {
+      await this.device.changeFanSpeed(miLevel);
+    }
+  }
+
+  findWaterSpeedModeFromMiio(speed) {
+    // Get the speed modes for this model
+    const speedModes = this.findSpeedModes().waterspeed || [];
+
+    // Find speed mode that matches the miLevel
+    return speedModes.find((mode) => mode.miLevel === speed);
+  }
+
+  async getWaterSpeedInDevice() {
+    // From https://github.com/marcelrv/XiaomiRobotVacuumProtocol/blob/master/water_box_custom_mode.md
+    const response = await this.device.call('get_water_box_custom_mode', [ ], { refresh : [ 'water_box_mode' ] });
+    // From https://github.com/nicoh88/miio/blob/master/lib/devices/vacuum.js#L11-L18
+    const [waterMode] = response || [];
+    if ( typeof waterMode === undefined ) {
+      this.log.error(response);
+      throw new Error(`Failed to get the water_box_mode`);
+    }
+    return waterMode;
+  }
+
+  async getWaterSpeed() {
+    await this.ensureDevice('getWaterSpeed');
+
+    
+    const speed = await this.getWaterSpeedInDevice();
+    this.log.info(`INF getWaterSpeed | ${this.model} | WaterBoxMode is ${speed} over miIO. Converting to HomeKit`)
+
+    const waterSpeed = this.findWaterSpeedModeFromMiio(speed);
+
+    let homekitValue = 0
+    if (waterSpeed) {
+      const { homekitTopLevel, name } = waterSpeed
+      this.log.info(`INF getWaterSpeed | ${this.model} | WaterBoxMode is ${speed} over miIO "${name}" > HomeKit speed ${homekitTopLevel}%`);
+      homekitValue = homekitTopLevel || 0;
+    }
+    this.services.waterBox.getCharacteristic(Characteristic.On).updateValue(homekitValue > 0);
+    return homekitValue;
+  }
+
+  async setWaterSpeed(speed) {
+    await this.ensureDevice('setWaterSpeed');
+
+    this.log.debug(`ACT setWaterSpeed | ${this.model} | Speed got ${speed}% over HomeKit > CLEANUP.`);
+
+    // Get the speed modes for this model
+    const speedModes = this.findSpeedModes().waterspeed || [];
+
+    // If the robot does not support water-mode cleaning
+    if (speedModes.length === 0) {
+      this.log.info(`INF setWaterSpeed | ${this.model} | Model does not support the water mode`);
+      return;
+    }
+
+    // gen1 has maximum of 91%, so anything over that won't work. Getting safety maximum.
+    const safeSpeed = Math.min(parseInt(speed), speedModes[speedModes.length - 1].homekitTopLevel);
+
+    // Find the minimum homekitTopLevel that matches the desired speed
+    const { miLevel, name } = speedModes.find((mode) => safeSpeed <= mode.homekitTopLevel);
+
+    this.log.info(`ACT setWaterSpeed | ${this.model} | WaterBoxMode set to ${miLevel} over miIO for "${name}".`);
+
+    // From https://github.com/marcelrv/XiaomiRobotVacuumProtocol/blob/master/water_box_custom_mode.md
+    const response = await this.device.call('set_water_box_custom_mode', [ miLevel ], { refresh : [ 'water_box_mode' ] });
+    // From https://github.com/nicoh88/miio/blob/master/lib/devices/vacuum.js#L11-L18
+    if ( response !== 0 && response[0] !== 'ok' ) {
+      this.log.error(response);
+      throw new Error(`Failed to set the water_box_mode to ${miLevel}`);
+    }
+  }
+
+  changedWaterSpeed(speed) {
+    this.log.info(`MON changedWaterSpeed | ${this.model} | WaterBoxMode is now ${speed}%`);
+
+    const speedMode = this.findWaterSpeedModeFromMiio(speed);
+
+    if (typeof speedMode === "undefined") {
+      this.log.warn(`WAR changedWaterSpeed | ${this.model} | Speed was changed to ${speed}%, this speed is not supported`);
+    } else {
+      const { homekitTopLevel, name } = speedMode;
+      this.log.info(`INF changedWaterSpeed | ${this.model} | Speed was changed to ${speed}% (${name}), for HomeKit ${homekitTopLevel}%`);
+      this.services.waterBox.getCharacteristic(Characteristic.RotationSpeed).updateValue(homekitTopLevel);
+      this.services.waterBox.getCharacteristic(Characteristic.On).updateValue(homekitTopLevel > 0)
+    }
   }
 
   async getPauseState() {
@@ -631,6 +850,8 @@ class XiaomiRoborockVacuum {
   }
 
   getServices() {
+    if (this.config.delay)
+      sleep(5000);
     this.log.debug(`DEB getServices | ${this.model}`);
     return Object.keys(this.services).map((key) => this.services[key]);
   }
