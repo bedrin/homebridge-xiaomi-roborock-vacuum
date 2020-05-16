@@ -201,6 +201,17 @@ class XiaomiRoborockVacuum {
       // TODO: Add 'change' status?
     }
 
+    this.services.moveRobotSwitch = new Service.Switch(
+      `${this.config.name} Move`,
+      "Move Switch"
+    );
+    this.services.moveRobotSwitch
+      .getCharacteristic(Characteristic.On)
+      .on("set", (newState, cb) =>
+        callbackify(() => this.triggerRobotMovement(newState), cb)
+      );
+    // TODO: Add 'change' status?
+
     if (this.config.dock) {
       this.services.dock = new Service.OccupancySensor(
         `${this.config.name} Dock`
@@ -1294,6 +1305,103 @@ class XiaomiRoborockVacuum {
     } catch (err) {
       this.log.error(
         `ERR pause | ${this.model} | Failed to pause.`,
+        err
+      );
+      throw err;
+    }
+  }
+
+  async triggerRobotMovement() {
+    try {
+      this.startRemoteControl(); 
+      await new Promise((resolve) => setTimeout(resolve, 20000)); // can take a while if robot was docked
+      
+      this.moveRobot(0, 0.1, 2000); 
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      this.moveRobot(1.57, 0.1, 2000);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      this.moveRobot(0, 0.1, 2000);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      
+      this.stopRemoteControl();
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    } catch (err) {
+      this.log.error(
+        `ERR triggerRobotMovement | ${this.model} | Failed triggerRobotMovement`,
+        err
+      );
+    }
+  }
+
+  async startRemoteControl() {
+    this.sequenceNumber = 0;
+    await this.ensureDevice("startRemoteControl");
+    try {
+      const refreshState = {
+        refresh: [ 'state' ],
+        refreshDelay: 1000
+      };
+      const changeResponse = await this.device.call('app_rc_start', [], refreshState);
+      if (!this.isSuccess(changeResponse)) {
+        throw new Error("Failed to start remote control");
+      }
+    } catch (err) {
+      this.log.error(
+        `ERR startRemoteControl | ${this.model} | Failed to start remote control.`,
+        err
+      );
+      throw err;
+    }
+  }
+
+  async stopRemoteControl() {
+    this.sequenceNumber = 0;
+    await this.ensureDevice("stopRemoteControl");
+    try {
+      const refreshState = {
+        refresh: [ 'state' ],
+        refreshDelay: 1000
+      };
+      const changeResponse = await this.device.call('app_rc_end', [], refreshState);
+      if (!this.isSuccess(changeResponse)) {
+        throw new Error("Failed to stop remote control");
+      }
+    } catch (err) {
+      this.log.error(
+        `ERR stopRemoteControl | ${this.model} | Failed to stop remote control.`,
+        err
+      );
+      throw err;
+    }
+  }
+
+  /**
+   * 
+   * @param {float} omega defines rotation; 3.14 stands for 360 degrees; can be negative or postivie; for example 3.14 or 0 or -0.78
+   * @param {float} velocity velocity in unknown units; 0.1 is a good start; negative values are not supported; for example 0.1
+   * @param {int} duration duration of movement in milliseconds; for example 2000
+   */
+  async moveRobot(omega, velocity, duration) {
+    this.sequenceNumber++;
+    await this.ensureDevice("moveRobot");
+    try {
+      const refreshState = {
+        refresh: [ 'state' ],
+        refreshDelay: 1000
+      };
+      // app_rc_move '{"omega":1,"velocity":0.1,"duration":200,"seqnum":1}'
+      const changeResponse = await this.device.call('app_rc_move', {
+        "omega" : omega,
+        "velocity" : velocity,
+        "duration" : duration,
+        "seqnum" : this.sequenceNumber
+      }, refreshState);
+      if (!this.isSuccess(changeResponse)) {
+        throw new Error("Failed to move robot");
+      }
+    } catch (err) {
+      this.log.error(
+        `ERR moveRobot | ${this.model} | Failed to move robot; omega: ${omega}, velocity: ${velocity}, duration: ${duration}.`,
         err
       );
       throw err;
